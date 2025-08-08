@@ -7,5 +7,5 @@ google-generativeai
 python-dotenv
 docx2txt
 pypdf
-chromadb
+chromadb==0.4.15
 python-docx
