@@ -220,13 +220,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import LLMChain
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.runnables import RunnableLambda, RunnableMap
 import google.generativeai as genai
 from dotenv import load_dotenv
-import shutil
 import re
 from docx import Document
 from io import BytesIO
@@ -242,16 +239,8 @@ if not GOOGLE_API_KEY:
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# Setup embedding model
-embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-# The vector store will now be created in-memory, avoiding file system issues.
-# It will be populated with documents each time the app runs.
-vectorstore = None
-
 # Extract text from uploaded files
 def extract_text_from_resume(file):
-    # Use BytesIO to handle in-memory file content
     file_extension = os.path.splitext(file.name)[1].lower()
     
     try:
@@ -274,26 +263,9 @@ def extract_text_from_resume(file):
         text = " ".join([doc.page_content for doc in documents])
         return text
     finally:
-        # Clean up temporary files
         if os.path.exists("temp.pdf"): os.remove("temp.pdf")
         if os.path.exists("temp.docx"): os.remove("temp.docx")
         if os.path.exists("temp.txt"): os.remove("temp.txt")
-
-# Text splitting
-def split_text(text):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    return splitter.create_documents([text])
-
-# Store resume analysis in the in-memory vector store
-def store_resume_analysis(resume_text, analysis):
-    global vectorstore
-    
-    # Check if vectorstore is initialized
-    if vectorstore is None:
-        vectorstore = Chroma(embedding_function=embedding_model)
-        
-    documents = split_text(analysis)
-    vectorstore.add_documents(documents)
 
 # Extract percentage score from analysis text
 def extract_suitability_score(text):
@@ -307,10 +279,9 @@ def create_updated_resume_doc(text):
     doc = Document()
     doc.add_heading('Updated Resume (ATS Optimized)', 0)
     
-    # Split the text by lines and add each as a paragraph
     lines = text.split('\n')
     for line in lines:
-        if line.strip(): # Avoid empty paragraphs
+        if line.strip():
             doc.add_paragraph(line)
             
     buffer = BytesIO()
@@ -394,18 +365,15 @@ XX%
             if score is not None:
                 st.metric("ATS Suitability Score", f"{score}%")
 
-            # Store analysis in the in-memory vector store
-            store_resume_analysis(resume_text, analysis)
-            st.success("✅ Analysis stored in vector database.")
-
             st.download_button("⬇️ Download Analysis", analysis, file_name="resume_analysis.txt")
 
             # Generate updated resume
             st.subheader("📄 Generate Updated ATS Resume")
 
-            prompt_updated_resume = PromptTemplate(
-                input_variables=["job_requirements", "resume_text"],
-                template="""
+            with st.spinner("Generating updated resume..."):
+                prompt_updated_resume = PromptTemplate(
+                    input_variables=["job_requirements", "resume_text"],
+                    template="""
 You are an expert ATS resume writer. Rewrite the candidate’s resume to meet 96%+ ATS match to the job description below.
 
 Resume:
@@ -416,19 +384,19 @@ Job Description:
 
 Your output should be a professional, detailed, ATS-optimized resume that includes missing keywords, relevant achievements, and matches job title and responsibilities. DO NOT include personal details.
 """
-            )
+                )
 
-            resume_update_chain = (
-                RunnableMap({
-                    "job_requirements": lambda x: x["job_requirements"],
-                    "resume_text": lambda x: x["resume_text"]
-                }) | prompt_updated_resume | llm | StrOutputParser()
-            )
+                resume_update_chain = (
+                    RunnableMap({
+                        "job_requirements": lambda x: x["job_requirements"],
+                        "resume_text": lambda x: x["resume_text"]
+                    }) | prompt_updated_resume | llm | StrOutputParser()
+                )
 
-            updated_resume = resume_update_chain.invoke({
-                "job_requirements": job_requirements,
-                "resume_text": resume_text
-            })
+                updated_resume = resume_update_chain.invoke({
+                    "job_requirements": job_requirements,
+                    "resume_text": resume_text
+                })
 
             docx_data = create_updated_resume_doc(updated_resume)
             st.download_button(
